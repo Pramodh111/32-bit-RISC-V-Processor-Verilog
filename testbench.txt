@@ -1,0 +1,167 @@
+`timescale 1ns/1ps
+
+module testbench;
+
+//================ CLOCK & RESET =================
+reg clk;
+reg reset;
+
+initial clk = 0;
+always #5 clk = ~clk;
+
+//================ SIGNALS =================
+wire [31:0] PC;
+wire [31:0] Instr;
+wire [31:0] ReadData;
+wire [31:0] ALUResult;
+wire [31:0] WriteData;
+wire MemWrite;
+
+//================ DUT =================
+riscv_top DUT (
+    .i_CLK(clk),
+    .i_Reset(reset),
+    .i_Instr(Instr),
+    .i_ReadData(ReadData),
+    .o_PC(PC),
+    .o_ALUResult(ALUResult),
+    .o_MemWrite(MemWrite),
+    .o_WriteData(WriteData)
+);
+
+//================ MEMORY (FIXED PORT NAMES) =================
+instr_memory IMEM (
+    .a(PC[7:0]),
+    .rd(Instr)
+);
+
+data_memory DMEM (
+    .clk(clk),
+    .reset(reset),
+    .a(ALUResult[7:0]),
+    .we(MemWrite),
+    .wd(WriteData),
+    .rd(ReadData)
+);
+
+//================ RESET =================
+initial begin
+    reset = 1;
+    #10;
+    reset = 0;
+end
+
+//================ SCOREBOARD =================
+reg [31:0] expected;
+reg [4:0] rd;
+
+always @(*) begin
+    case (PC)
+
+    32'h00: expected = 5;
+    32'h04: expected = 12;
+    32'h08: expected = 3;
+    32'h0C: expected = 7;
+    32'h10: expected = 4;
+    32'h14: expected = 11;
+    32'h18: expected = rd;
+    32'h1C: expected = rd;
+    32'h20: expected = 0;
+    32'h24: expected = 7;
+    32'h28: expected = 2;
+    32'h2C: expected = 2;
+    32'h30: expected = 2;
+    32'h34: expected = 2;
+    32'h38: expected = 32'h3C;
+    32'h3C: expected = 1;
+    32'h40: expected = 4;
+    32'h44: expected = 4;
+    32'h48: expected = rd;
+
+    default: expected = 0;
+
+    endcase
+end
+
+//================ MONITOR =================
+always @(negedge clk) begin
+
+    rd = Instr[11:7];
+
+    case (Instr[6:0])
+
+    // R-type
+    7'b0110011: begin
+        case (Instr[14:12])
+        3'b000:
+            if ({Instr[5], Instr[30]} == 2'b11)
+                $display("PC=%h SUB  x%0d | expected=%0d actual=%0d",
+                         PC, rd, expected, DUT.d.Result);
+            else
+                $display("PC=%h ADD  x%0d | expected=%0d actual=%0d",
+                         PC, rd, expected, DUT.d.Result);
+        3'b110:
+            $display("PC=%h OR   x%0d | expected=%0d actual=%0d",
+                     PC, rd, expected, DUT.d.Result);
+        3'b111:
+            $display("PC=%h AND  x%0d | expected=%0d actual=%0d",
+                     PC, rd, expected, DUT.d.Result);
+        endcase
+    end
+
+    // I-type
+    7'b0010011: begin
+        case (Instr[14:12])
+        3'b000:
+            $display("PC=%h ADDI x%0d | expected=%0d actual=%0d",
+                     PC, rd, expected, DUT.d.Result);
+        3'b110:
+            $display("PC=%h ORI  x%0d | expected=%0d actual=%0d",
+                     PC, rd, expected, DUT.d.Result);
+        3'b111:
+            $display("PC=%h ANDI x%0d | expected=%0d actual=%0d",
+                     PC, rd, expected, DUT.d.Result);
+        endcase
+    end
+
+    // LOAD
+    7'b0000011:
+        $display("PC=%h LW   x%0d | expected=%0d actual=%0d",
+                 PC, rd, expected, DUT.d.Result);
+
+    // STORE
+    7'b0100011:
+        $display("PC=%h SW   x%0d | expected=%0d actual=%0d",
+                 PC, Instr[24:20], expected, DUT.d.RD2);
+
+    // BRANCH
+    7'b1100011:
+        $display("PC=%h BRANCH", PC);
+
+    // JAL
+    7'b1101111:
+        $display("PC=%h JAL  x%0d | expected=%0h actual=%0h",
+                 PC, rd, expected, DUT.d.Result);
+
+    // JALR
+    7'b1100111:
+        $display("PC=%h JALR x%0d | expected=%0h actual=%0h",
+                 PC, rd, expected, DUT.d.Result);
+
+    endcase
+
+end
+
+//================ WAVEFORM =================
+initial begin
+    $dumpfile("wave.vcd");
+    $dumpvars(0, testbench);
+end
+
+//================ SIMULATION END =================
+initial begin
+    #500;
+    $finish;
+end
+
+endmodule

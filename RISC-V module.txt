@@ -1,0 +1,210 @@
+//====================== RISC-V CONTROLLER ======================
+module riscv_controller (
+	input  wire [6:0] i_op,
+	input  wire [2:0] i_funct3,
+	input  wire       i_funct7,
+	input  wire       i_Zero,
+	output wire [1:0] o_PCSrc,
+	output wire [1:0] o_ResultSrc,
+	output wire       o_MemWrite,
+	output wire [2:0] o_ALUControl,
+	output wire       o_ALUSrc,
+	output wire [1:0] o_ImmSrc,
+	output wire       o_RegWrite
+);
+
+wire Branch, Jump, ImmJump;
+wire [1:0] ALUOp;
+wire BeqBne;
+
+main_decoder md (
+	i_op, Branch, Jump, ImmJump,
+	o_ResultSrc, o_MemWrite,
+	o_ALUSrc, o_ImmSrc,
+	o_RegWrite, ALUOp
+);
+
+alu_decoder ad (
+	ALUOp, i_op[5], i_funct3, i_funct7, o_ALUControl
+);
+
+assign BeqBne = (!i_funct3[0]) ? (i_Zero & Branch) : (~i_Zero & Branch);
+assign o_PCSrc = {ImmJump , (BeqBne | Jump)};
+
+endmodule
+
+//====================== DATAPATH ======================
+module riscv_datapath (
+	input  wire        i_CLK,
+	input  wire        i_Reset,
+	input  wire [31:0] i_Instr,
+	input  wire [1:0]  i_PCSrc,
+	input  wire [1:0]  i_ResultSrc,
+	input  wire [2:0]  i_ALUControl,
+	input  wire        i_ALUSrc,
+	input  wire [1:0]  i_ImmSrc,
+	input  wire        i_RegWrite,
+	input  wire [31:0] i_ReadData,
+	output wire        o_Zero,
+	output wire [31:0] o_PC,
+	output wire [31:0] o_ALUResult,
+	output wire [31:0] o_WriteData
+);
+
+wire [31:0] RD1, RD2, ImmExt, SrcB;
+wire [31:0] Result, PCPlus4, PCTarget, PCNext;
+wire [31:0] PC;
+
+regfile rf(i_CLK,i_Reset,i_Instr[19:15],i_Instr[24:20],i_Instr[11:7],
+           i_RegWrite,Result,RD1,RD2);
+
+extend ex(i_Instr[31:7],i_ImmSrc,ImmExt);
+
+mux2 m1(RD2,ImmExt,i_ALUSrc,SrcB);
+
+alu alu1(RD1,SrcB,i_ALUControl,o_Zero,o_ALUResult);
+
+mux3 m2(o_ALUResult,i_ReadData,PCPlus4,i_ResultSrc,Result);
+
+adder a1(PC,32'd4,PCPlus4);
+adder a2(PC,ImmExt,PCTarget);
+
+mux3 m3(PCPlus4,PCTarget,o_ALUResult,i_PCSrc,PCNext);
+
+dff pc_reg(PCNext,i_CLK,i_Reset,PC);
+
+assign o_PC = PC;
+assign o_WriteData = RD2;
+
+endmodule
+
+//====================== TOP ======================
+module riscv_top (
+	input  wire        i_CLK,
+	input  wire        i_Reset,
+	input  wire [31:0] i_Instr,
+	input  wire [31:0] i_ReadData,
+	output wire [31:0] o_PC,
+	output wire [31:0] o_ALUResult,
+	output wire        o_MemWrite,
+	output wire [31:0] o_WriteData
+);
+
+wire Zero;
+wire [1:0] PCSrc, ResultSrc;
+wire [2:0] ALUControl;
+wire ALUSrc;
+wire [1:0] ImmSrc;
+wire RegWrite;
+
+riscv_controller c(
+	i_Instr[6:0], i_Instr[14:12], i_Instr[30], Zero,
+	PCSrc, ResultSrc, o_MemWrite,
+	ALUControl, ALUSrc, ImmSrc, RegWrite
+);
+
+riscv_datapath d(
+	i_CLK, i_Reset, i_Instr, PCSrc, ResultSrc,
+	ALUControl, ALUSrc, ImmSrc, RegWrite,
+	i_ReadData, Zero, o_PC, o_ALUResult, o_WriteData
+);
+
+endmodule
+
+//====================== ALU DECODER ======================
+module alu_decoder(input [1:0] i_ALUOp,input i_op,input [2:0] i_funct3,input i_funct7,output reg [2:0] o_ALUControl);
+always @(*) begin
+case(i_ALUOp)
+2'b00: o_ALUControl=3'b000;
+2'b01: o_ALUControl=3'b001;
+2'b10: begin
+case(i_funct3)
+3'b000: o_ALUControl = ({i_op,i_funct7}==2'b11)?3'b001:3'b000;
+3'b010: o_ALUControl=3'b101;
+3'b110: o_ALUControl=3'b011;
+3'b111: o_ALUControl=3'b010;
+default:o_ALUControl=3'b000;
+endcase end
+default:o_ALUControl=3'b000;
+endcase end
+endmodule
+
+//====================== MAIN DECODER ======================
+module main_decoder(input [6:0] i_op,output reg o_Branch,o_Jump,o_ImmJump,
+output reg [1:0] o_ResultSrc,output reg o_MemWrite,o_ALUSrc,
+output reg [1:0] o_ImmSrc,output reg o_RegWrite,output reg [1:0] o_ALUOp);
+
+always @(*) begin
+case(i_op)
+7'b0110011: begin o_RegWrite=1;o_ALUOp=2'b10;o_ALUSrc=0;o_MemWrite=0;o_ResultSrc=0;o_Branch=0;o_Jump=0;o_ImmJump=0;o_ImmSrc=0;end
+7'b0010011: begin o_RegWrite=1;o_ALUOp=2'b10;o_ALUSrc=1;o_MemWrite=0;o_ResultSrc=0;o_Branch=0;o_Jump=0;o_ImmJump=0;o_ImmSrc=0;end
+7'b0000011: begin o_RegWrite=1;o_ALUOp=2'b00;o_ALUSrc=1;o_MemWrite=0;o_ResultSrc=1;o_Branch=0;o_Jump=0;o_ImmJump=0;o_ImmSrc=0;end
+7'b0100011: begin o_RegWrite=0;o_ALUOp=2'b00;o_ALUSrc=1;o_MemWrite=1;o_ResultSrc=0;o_Branch=0;o_Jump=0;o_ImmJump=0;o_ImmSrc=1;end
+7'b1100011: begin o_RegWrite=0;o_ALUOp=2'b01;o_ALUSrc=0;o_MemWrite=0;o_ResultSrc=0;o_Branch=1;o_Jump=0;o_ImmJump=0;o_ImmSrc=2;end
+7'b1101111: begin o_RegWrite=1;o_ALUOp=2'b00;o_ALUSrc=0;o_MemWrite=0;o_ResultSrc=2;o_Branch=0;o_Jump=1;o_ImmJump=0;o_ImmSrc=3;end
+default: begin o_RegWrite=0;o_ALUOp=0;o_ALUSrc=0;o_MemWrite=0;o_ResultSrc=0;o_Branch=0;o_Jump=0;o_ImmJump=0;o_ImmSrc=0;end
+endcase end
+endmodule
+
+//====================== BASIC BLOCKS ======================
+module adder(input [31:0] a,b,output [31:0] y); assign y=a+b; endmodule
+
+module dff(input [31:0] d,input clk,reset,output reg [31:0] q);
+always @(posedge clk or posedge reset) if(reset) q<=0; else q<=d;
+endmodule
+
+module mux2(input [31:0] a,b,input s,output [31:0] y); assign y=s?b:a; endmodule
+
+module mux3(input [31:0] a,b,c,input [1:0] s,output reg [31:0] y);
+always @(*) case(s)
+2'b00:y=a;2'b01:y=b;2'b10:y=c;default:y=0;
+endcase endmodule
+
+//====================== ALU ======================
+module alu(input [31:0] a,b,input [2:0] sel,output zero,output reg [31:0] y);
+always @(*) case(sel)
+3'b000:y=a+b;
+3'b001:y=a-b;
+3'b010:y=a&b;
+3'b011:y=a|b;
+3'b101:y=(a<b)?1:0;
+default:y=0;
+endcase
+assign zero=(y==0);
+endmodule
+
+//====================== REGFILE ======================
+module regfile(input clk,reset,input [4:0] a1,a2,a3,input we,input [31:0] wd,
+output [31:0] rd1,rd2);
+reg [31:0] r[31:0]; integer i;
+always @(posedge clk or posedge reset)
+if(reset) for(i=0;i<32;i=i+1) r[i]<=0;
+else if(we) r[a3]<=wd;
+assign rd1=(a1==0)?0:r[a1];
+assign rd2=(a2==0)?0:r[a2];
+endmodule
+
+//====================== EXTEND ======================
+module extend(input [31:7] in,input [1:0] sel,output reg [31:0] out);
+always @(*) case(sel)
+2'b00: out={{20{in[31]}},in[31:20]};
+2'b01: out={{20{in[31]}},in[31:25],in[11:7]};
+2'b10: out={{20{in[31]}},in[7],in[30:25],in[11:8],1'b0};
+2'b11: out={{12{in[31]}},in[19:12],in[20],in[30:21],1'b0};
+default: out=0;
+endcase endmodule
+
+//====================== MEMORIES ======================
+module data_memory(input clk,reset,input [7:0] a,input we,input [31:0] wd,output [31:0] rd);
+reg [31:0] mem[255:0]; integer i;
+always @(posedge clk or posedge reset)
+if(reset) for(i=0;i<256;i=i+1) mem[i]<=0;
+else if(we) mem[a]<=wd;
+assign rd=mem[a];
+endmodule
+
+module instr_memory(input [7:0] a,output [31:0] rd);
+reg [31:0] mem[255:0];
+initial $readmemh("InstructionMem.txt", mem);
+assign rd=mem[a];
+endmodule
